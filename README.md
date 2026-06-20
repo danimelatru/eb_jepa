@@ -61,20 +61,30 @@ As soon as Epoch 5 hit and the encoder unfroze (activating Latent Distillation),
 
 **Conclusion:** The mathematical optimum for Hierarchical World Models is strict compartmentalization. Co-training the shared latent space actively destroys the low-level physics representations.
 
-#### 2. The "Cheating" Evaluator
-We discovered that the 66% baseline relies heavily on manually-coded memory "cheats" injected directly into the evaluation loop (`eval_subgoal.py`):
-- `blocked`: Manually prevents the agent from re-trying directions that hit walls.
-- `last_rev`: Forbids the agent from reversing its last step.
-- `revisit_pen`: Artificially penalizes returning to visited cells.
+#### 2. Hand-Coded Execution Memory vs. the Learned Policy
+The 66% A\*-free number leans on three pieces of hand-coded *execution memory* in the
+reacher loop (`eval_subgoal.py`). None of them use privileged information (no A\*, no
+goal cell, no maze grid) — they are standard closed-loop bookkeeping — but they are
+**not learned**, so the success number must not silently credit the learned policy for
+what they do:
+- `blocked`: cross-step memory of `(cell, direction)` pairs that physically didn't move (wall memory).
+- `last_rev`: forbids immediately reversing the last committed move (anti-oscillation).
+- `revisit_pen`: count-based penalty for stepping onto already-visited cells (exploration drive).
 
-Without these cheats, the baseline model blindly hits the wall forever (0%). The 21x21 maze is simply too complex for the current model capacity to navigate purely reactively without memory hacks.
+The honest charge is **attributional, not goal-peeking**: with these stripped, a purely
+reactive memoryless policy oscillates in place (~0%), so the heuristics — not the learned
+world-model — are doing much of the load-bearing navigation. The fix is not a separate
+"strict" script but an **ablation table** that quantifies each heuristic's contribution.
 
-### Our Current Strategy: Honest Evaluation on 11x11 Maze
+### Honest Evaluation: One Merged Evaluator + Ablation Table
 
-To prove that our agent can learn a *true* routing policy without relying on evaluator cheats, we are retraining the pipeline on an adapted 11x11 maze:
+`eval_subgoal.py` is now the single A\*-free evaluator. Each memory heuristic is a flag,
+and `--ablation` runs a leave-one-out table on a **fixed maze set** (same `--seed` for
+every row, so rows are directly comparable). The deleted `eval_strict.py` is just the
+`--no-blocked --no-last-rev --revisit-pen 0` row.
 
-1. **Strict Isolation:** We completely disabled Co-Training (Stage 3). We only run Stage 1 (Fine Model) and Stage 2 (Subgoal Predictor).
-2. **Honest Evaluation:** We created `eval_strict.py`, which strips out all memory hacks (`blocked`, `last_rev`, `revisit_pen`), forcing the model to succeed purely based on its learned neural representations.
+1. **Strict Isolation:** Co-Training (Stage 3) is disabled — we run only Stage 1 (Fine Model) and Stage 2 (Subgoal Predictor).
+2. **Honest Evaluation:** The ablation reports `full` vs. each heuristic removed vs. the `memoryless` reactive floor, so the learned policy's true contribution is visible.
 
 ```bash
 # 1. Train the Fine World Model on 11x11 — ~15 min
@@ -84,11 +94,30 @@ uv run python -m examples.ac_video_jepa.maze.main examples/ac_video_jepa/cfgs/tr
 uv run python -m examples.ac_video_jepa.maze.main_subgoal \
   ./maze_fine_small/latest.pth.tar ./maze_subgoal_small 512 10 0.001
 
-# 3. Evaluate A*-Free Navigation STRICTLY (0 cheats)
-uv run python -m examples.ac_video_jepa.maze.eval_strict \
+# 3. A*-Free memory ablation table (full -> memoryless floor) on a fixed maze set
+uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
   ./maze_fine_small/latest.pth.tar \
   ./maze_subgoal_small/subgoal.pth.tar \
-  ./eval_results_strict 32 4 0.0 32 4 10
+  ./eval_results_ablation 32 4 --ablation --revisit-pen 1.0 --n-gifs 4 --seed 0
+```
+
+This writes `ablation.md` / `ablation.json`:
+
+| config | blocked | last_rev | revisit_pen | success | SPL |
+|---|---|---|---|---|---|
+| full | on | on | 1.0 | … | … |
+| -revisit | on | on | 0 | … | … |
+| -last_rev | on | off | 1.0 | … | … |
+| -blocked | off | on | 1.0 | … | … |
+| memoryless | off | off | 0 | … | … |
+
+To run a single config instead (legacy positional args still work):
+
+```bash
+# memoryless reactive floor (the old eval_strict.py)
+uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
+  ./maze_fine_small/latest.pth.tar ./maze_subgoal_small/subgoal.pth.tar \
+  ./eval_results_strict 32 4 --no-blocked --no-last-rev --revisit-pen 0
 ```
 
 ### Files Modified
@@ -96,8 +125,7 @@ uv run python -m examples.ac_video_jepa.maze.eval_strict \
 | File | Description |
 |---|---|
 | `examples/ac_video_jepa/maze/main_subgoal.py` | Bug fix: added `data_pipeline.warm_up()` and `.float()` casting |
-| `examples/ac_video_jepa/maze/eval_subgoal.py` | Bug fix: device parameter for streaming mode |
-| `examples/ac_video_jepa/maze/eval_strict.py` | New: Honest evaluator with 0 memory cheats |
+| `examples/ac_video_jepa/maze/eval_subgoal.py` | Merged evaluator: per-heuristic flags (`--use-blocked`/`--use-last-rev`/`--revisit-pen`) + `--ablation` table; seeded mazes; absorbs and replaces `eval_strict.py` |
 | `presentation.tex` | LaTeX Beamer presentation with TikZ diagrams and our scientific pivot |
 | `hackathon_paper.md` | Detailed research-paper-style analysis |
 
