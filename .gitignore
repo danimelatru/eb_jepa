@@ -230,3 +230,29 @@ arxiv/
 arxiv_tmp/
 CLAUDE.md
 setup.md
+
+# Hackathon / LaTeX build artifacts
+presentation.aux
+presentation.nav
+presentation.out
+presentation.pdf
+presentation.snm
+presentation.log
+presentation.toc
+presentation.vrb
+
+# SLURM output files (generated on the cluster)
+*.out
+*.err
+run_*.sh
+slurm_test_*.out
+slurm_test_*.err
+maze_*.out
+resume_*.out
+eval_*.out
+
+# Cluster-specific checkpoints and results (too large for git)
+distillation_results*/
+eval_results*/
+maze_fine/
+maze_subgoal/

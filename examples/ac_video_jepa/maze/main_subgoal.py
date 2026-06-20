@@ -39,6 +39,9 @@ def main():
         env_name=cfg.data.env_name,
         cfg_data=OmegaConf.to_container(cfg.data, resolve=True), device=device)
 
+    if data_pipeline is not None:
+        data_pipeline.warm_up()
+
     jepa, f = build_fine(cfg, data_config, device)
     info = load_checkpoint(Path(fine_ckpt), jepa, optimizer=None, scheduler=None,
                            device=device, strict=False)
@@ -53,8 +56,8 @@ def main():
     for epoch in range(epochs):
         t0 = time.time(); tot = 0.0; nb = 0
         for x, a, loc, _, _ in loader:
-            x = x.to(device, non_blocking=True)
-            loc = loc.to(device, non_blocking=True)             # [B,2,T] normalized positions
+            x = x.to(device, non_blocking=True).float()
+            loc = loc.to(device, non_blocking=True).float()             # [B,2,T] normalized positions
             B, _, T = loc.shape
             with torch.no_grad():
                 z = jepa.encode(x)                              # [B,f,T,1,1]

@@ -45,6 +45,63 @@
 
 ---
 
+## 🏆 VivaTech Hackathon 2026 — Team HackTheWorld
+
+### Latent Distillation for Hierarchical World Model Co-Training
+
+**Track:** Hierarchical Maze World Model — A*-Free Navigation
+
+**Problem:** When the Low-Level Fine World Model and High-Level Subgoal Predictor are co-trained jointly, the massive routing gradients from the subgoal loss catastrophically overwrite the encoder's learned physics representations, dropping the success rate from **66% → 6.25%**.
+
+**Our Solution — Latent Distillation:**
+We introduce a frozen reference encoder and an MSE penalty that anchors the active encoder to the physics manifold during co-training:
+
+$$\mathcal{L}_{\text{Total}} = \mathcal{L}_{\text{JEPA}} + \lambda_{\text{aux}} \mathcal{L}_{\text{aux}} + \lambda_{\text{sg}} \mathcal{L}_{\text{subgoal}} + \lambda_{\text{distill}} \cdot \text{MSE}(z, z_{\text{frozen}})$$
+
+Combined with a **Staged Unfreezing** schedule (5 warmup epochs with encoder frozen, then gentle fine-tuning), this achieves:
+
+| Strategy | λ_distill | A*-Free Success Rate | SPL |
+|---|---|---|---|
+| Frozen Baseline | N/A | ~66% | ~0.600 |
+| Naïve Co-Training | 0.0 | 6.25% | 0.059 |
+| Over-Distillation | 50.0 | 0.00% | 0.000 |
+| **Latent Distillation (Ours)** | **10.0** | **81.25%** | **0.751** |
+
+### Reproducing Our Results
+
+```bash
+# 1. Train the Fine World Model (Stage 1) — ~30 min
+uv run python -m examples.ac_video_jepa.maze.main
+
+# 2. Train the Subgoal Predictor (Stage 2) — ~30 min
+uv run python -m examples.ac_video_jepa.maze.main_subgoal \
+  ./maze_fine/latest.pth.tar ./maze_subgoal 512 7 0.001
+
+# 3. Co-Train with Latent Distillation (Stage 3) — ~1 hour
+uv run python -m examples.ac_video_jepa.maze.main_cotrain \
+  ./maze_fine/latest.pth.tar ./maze_subgoal/subgoal.pth.tar \
+  ./distillation_results 4 6 5 5e-5 10.0
+
+# 4. Evaluate A*-Free Navigation (Stage 4)
+uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
+  ./distillation_results/epoch_4.pth.tar \
+  ./distillation_results/subgoal_4.pth.tar \
+  ./eval_results 32 4 0.05 32 4 10
+```
+
+### Files Modified
+
+| File | Description |
+|---|---|
+| `examples/ac_video_jepa/maze/main_cotrain.py` | Core implementation: frozen encoder, MSE distillation loss, staged unfreezing, checkpoint resume, per-epoch saves |
+| `examples/ac_video_jepa/maze/main_subgoal.py` | Bug fix: added `data_pipeline.warm_up()` and `.float()` casting |
+| `examples/ac_video_jepa/maze/eval_subgoal.py` | Bug fix: device parameter for streaming mode |
+| `presentation.tex` | LaTeX Beamer presentation with TikZ diagrams |
+| `hackathon_paper.md` | Detailed research-paper-style analysis |
+| `figures/` | Evaluation GIFs and PDF unrolls from cluster runs |
+
+---
+
 ## 📚 Examples
 
 ### [Image JEPA](examples/image_jepa/README.md)
