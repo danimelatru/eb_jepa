@@ -47,58 +47,59 @@
 
 ## 🏆 VivaTech Hackathon 2026 — Team HackTheWorld
 
-### Latent Distillation for Hierarchical World Model Co-Training
+### Hierarchical World Model Co-Training: A Scientific Pivot
 
 **Track:** Hierarchical Maze World Model — A*-Free Navigation
 
-**Problem:** When the Low-Level Fine World Model and High-Level Subgoal Predictor are co-trained jointly, the massive routing gradients from the subgoal loss catastrophically overwrite the encoder's learned physics representations, dropping the success rate from **66% → 6.25%**.
+Initially, we hypothesized that the catastrophic forgetting during Co-Training could be solved via **Latent Distillation**. However, systematic hyperparameter sweeps on the cluster revealed two massive discoveries that forced us to pivot:
 
-**Our Solution — Latent Distillation:**
-We introduce a frozen reference encoder and an MSE penalty that anchors the active encoder to the physics manifold during co-training:
+#### 1. Co-Training is Actively Harmful
+Our best result (81.25% A*-Free Success) was achieved at Epoch 4 of Co-Training. However, mathematical analysis of our training logs revealed that during the first 5 "warmup" epochs, the encoder's learning rate was exactly `0.0`. 
+This proves that the performance spike was **not** due to Latent Distillation—it was simply the result of training the High-Level Subgoal Predictor for 5 extra epochs on top of the **perfectly frozen physics representations** from Stage 1. 
 
-$$\mathcal{L}_{\text{Total}} = \mathcal{L}_{\text{JEPA}} + \lambda_{\text{aux}} \mathcal{L}_{\text{aux}} + \lambda_{\text{sg}} \mathcal{L}_{\text{subgoal}} + \lambda_{\text{distill}} \cdot \text{MSE}(z, z_{\text{frozen}})$$
+As soon as Epoch 5 hit and the encoder unfroze (activating Latent Distillation), the performance crashed to **34%**.
 
-Combined with a **Staged Unfreezing** schedule (5 warmup epochs with encoder frozen, then gentle fine-tuning), this achieves:
+**Conclusion:** The mathematical optimum for Hierarchical World Models is strict compartmentalization. Co-training the shared latent space actively destroys the low-level physics representations.
 
-| Strategy | λ_distill | A*-Free Success Rate | SPL |
-|---|---|---|---|
-| Frozen Baseline | N/A | ~66% | ~0.600 |
-| Naïve Co-Training | 0.0 | 6.25% | 0.059 |
-| Over-Distillation | 50.0 | 0.00% | 0.000 |
-| **Latent Distillation (Ours)** | **10.0** | **81.25%** | **0.751** |
+#### 2. The "Cheating" Evaluator
+We discovered that the 66% baseline relies heavily on manually-coded memory "cheats" injected directly into the evaluation loop (`eval_subgoal.py`):
+- `blocked`: Manually prevents the agent from re-trying directions that hit walls.
+- `last_rev`: Forbids the agent from reversing its last step.
+- `revisit_pen`: Artificially penalizes returning to visited cells.
 
-### Reproducing Our Results
+Without these cheats, the baseline model blindly hits the wall forever (0%). The 21x21 maze is simply too complex for the current model capacity to navigate purely reactively without memory hacks.
+
+### Our Current Strategy: Honest Evaluation on 11x11 Maze
+
+To prove that our agent can learn a *true* routing policy without relying on evaluator cheats, we are retraining the pipeline on an adapted 11x11 maze:
+
+1. **Strict Isolation:** We completely disabled Co-Training (Stage 3). We only run Stage 1 (Fine Model) and Stage 2 (Subgoal Predictor).
+2. **Honest Evaluation:** We created `eval_strict.py`, which strips out all memory hacks (`blocked`, `last_rev`, `revisit_pen`), forcing the model to succeed purely based on its learned neural representations.
 
 ```bash
-# 1. Train the Fine World Model (Stage 1) — ~30 min
-uv run python -m examples.ac_video_jepa.maze.main
+# 1. Train the Fine World Model on 11x11 — ~15 min
+uv run python -m examples.ac_video_jepa.maze.main examples/ac_video_jepa/cfgs/train/maze/train_maze_small.yaml --folder=./maze_fine_small
 
-# 2. Train the Subgoal Predictor (Stage 2) — ~30 min
+# 2. Train the Subgoal Predictor on 11x11 — ~10 min
 uv run python -m examples.ac_video_jepa.maze.main_subgoal \
-  ./maze_fine/latest.pth.tar ./maze_subgoal 512 7 0.001
+  ./maze_fine_small/latest.pth.tar ./maze_subgoal_small 512 10 0.001
 
-# 3. Co-Train with Latent Distillation (Stage 3) — ~1 hour
-uv run python -m examples.ac_video_jepa.maze.main_cotrain \
-  ./maze_fine/latest.pth.tar ./maze_subgoal/subgoal.pth.tar \
-  ./distillation_results 4 6 5 5e-5 10.0
-
-# 4. Evaluate A*-Free Navigation (Stage 4)
-uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
-  ./distillation_results/epoch_4.pth.tar \
-  ./distillation_results/subgoal_4.pth.tar \
-  ./eval_results 32 4 0.05 32 4 10
+# 3. Evaluate A*-Free Navigation STRICTLY (0 cheats)
+uv run python -m examples.ac_video_jepa.maze.eval_strict \
+  ./maze_fine_small/latest.pth.tar \
+  ./maze_subgoal_small/subgoal.pth.tar \
+  ./eval_results_strict 32 4 0.0 32 4 10
 ```
 
 ### Files Modified
 
 | File | Description |
 |---|---|
-| `examples/ac_video_jepa/maze/main_cotrain.py` | Core implementation: frozen encoder, MSE distillation loss, staged unfreezing, checkpoint resume, per-epoch saves |
 | `examples/ac_video_jepa/maze/main_subgoal.py` | Bug fix: added `data_pipeline.warm_up()` and `.float()` casting |
 | `examples/ac_video_jepa/maze/eval_subgoal.py` | Bug fix: device parameter for streaming mode |
-| `presentation.tex` | LaTeX Beamer presentation with TikZ diagrams |
+| `examples/ac_video_jepa/maze/eval_strict.py` | New: Honest evaluator with 0 memory cheats |
+| `presentation.tex` | LaTeX Beamer presentation with TikZ diagrams and our scientific pivot |
 | `hackathon_paper.md` | Detailed research-paper-style analysis |
-| `figures/` | Evaluation GIFs and PDF unrolls from cluster runs |
 
 ---
 
