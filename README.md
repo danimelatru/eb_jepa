@@ -86,13 +86,21 @@ every row, so rows are directly comparable). The deleted `eval_strict.py` is jus
 1. **Strict Isolation:** Co-Training (Stage 3) is disabled — we run only Stage 1 (Fine Model) and Stage 2 (Subgoal Predictor).
 2. **Honest Evaluation:** The ablation reports `full` vs. each heuristic removed vs. the `memoryless` reactive floor, so the learned policy's true contribution is visible.
 
-```bash
-# 1. Train the Fine World Model on 11x11 — ~15 min
-uv run python -m examples.ac_video_jepa.maze.main examples/ac_video_jepa/cfgs/train/maze/train_maze_small.yaml --folder=./maze_fine_small
+The whole pipeline (train fine WM → train subgoal → ablation) is one SLURM job —
+`examples/ac_video_jepa/maze/pipeline.sbatch` — or run the three steps by hand
+(`WANDB_MODE=disabled` so no wandb key is needed):
 
-# 2. Train the Subgoal Predictor on 11x11 — ~10 min
-uv run python -m examples.ac_video_jepa.maze.main_subgoal \
-  ./maze_fine_small/latest.pth.tar ./maze_subgoal_small 512 10 0.001
+```bash
+# 1. Train the Fine World Model on 11x11 — ~15 min training (+plan-eval overhead)
+WANDB_MODE=disabled uv run python -m examples.ac_video_jepa.main \
+  --fname examples/ac_video_jepa/cfgs/train/maze/train_maze_small.yaml \
+  --meta.model_folder=./maze_fine_small --meta.load_model=False
+
+# 2. Train the Subgoal Predictor on 11x11 — ~10 min  (args: <fine_ckpt> <out> <N> <epochs>)
+#    N is the waypoint horizon (~N cells ahead); use a small value (8), NOT 512 (which
+#    clamps every waypoint to the final goal and collapses the hierarchy).
+WANDB_MODE=disabled uv run python -m examples.ac_video_jepa.maze.main_subgoal \
+  ./maze_fine_small/latest.pth.tar ./maze_subgoal_small 8 10
 
 # 3. A*-Free memory ablation table (full -> memoryless floor) on a fixed maze set
 uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
@@ -101,15 +109,24 @@ uv run python -m examples.ac_video_jepa.maze.eval_subgoal \
   ./eval_results_ablation 32 4 --ablation --revisit-pen 1.0 --n-gifs 4 --seed 0
 ```
 
-This writes `ablation.md` / `ablation.json`:
+#### Result — A\*-free memory ablation (32 mazes, seed 0, 11×11)
 
 | config | blocked | last_rev | revisit_pen | success | SPL |
 |---|---|---|---|---|---|
-| full | on | on | 1.0 | … | … |
-| -revisit | on | on | 0 | … | … |
-| -last_rev | on | off | 1.0 | … | … |
-| -blocked | off | on | 1.0 | … | … |
-| memoryless | off | off | 0 | … | … |
+| full | on | on | 1.0 | 75.00% | 0.743 |
+| **−revisit** | on | on | 0 | **96.88%** | **0.969** |
+| −last_rev | on | **off** | 1.0 | 3.12% | 0.031 |
+| −blocked | **off** | on | 1.0 | 75.00% | 0.743 |
+| memoryless | off | off | 0 | 0.00% | 0.000 |
+
+**Three findings the ablation makes precise:**
+1. **The learned subgoal policy works** — with only *legitimate* execution memory it reaches **96.88%** (no A\*, no map, no goal-peeking).
+2. **Only one heuristic is load-bearing, and it's a legitimate one:** removing `last_rev` (anti-oscillation) collapses 75% → **3.12%**. A memoryless greedy controller oscillates in 2-cycles; one bit of "don't reverse your last move" unlocks the rest.
+3. **The other two were not helping:** `blocked` is inert (`−blocked` = `full` = 75.00%, because the wall-aware WM + per-step retry already avoids walls), and `revisit_pen` was *actively harmful* (removing it raises 75% → 96.88% — it traps the agent in dead-ends).
+
+So the honest story is not "0% without cheats" but a clean decomposition: **the learned compass is good; the score rested on a single legitimate anti-reversal rule; the revisit penalty hurt.** The `memoryless` 0% is the reactive floor that the original opaque number hid.
+
+> ⚠️ **Caveat — not directly comparable to the prior 66%.** This 96.88% is on the *easier* 11×11 maze; the 66% figure was on 21×21. For an apples-to-apples comparison, rerun the same ablation with `train_maze_aux.yaml` (21×21, stronger aux-position loss).
 
 To run a single config instead (legacy positional args still work):
 

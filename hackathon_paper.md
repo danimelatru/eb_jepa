@@ -186,6 +186,9 @@ We conducted a systematic sweep over the distillation coefficient $\lambda_{\tex
 > [!IMPORTANT]
 > The 10.0 result was obtained from a 4-epoch checkpoint due to a SLURM timeout on a slow node. This was serendipitously optimal — training beyond epoch 4 causes late degradation (see §4.3).
 
+> [!WARNING]
+> **These A\*-free success rates are reported with hand-coded execution-memory heuristics active.** A follow-up ablation (§4.5) shows the headline number rests on a single anti-oscillation heuristic, not on the learned policy alone — the purely learned, memoryless controller scores **0%**. Read §4.5 before interpreting the rates above as a measure of learned navigation.
+
 ### 4.2 Per-Episode Evaluation Breakdown (λ=10.0, Epoch 4)
 
 The evaluation runs the agent through 32 randomly generated mazes with a step budget of `4 × A*_optimal_length + 10`:
@@ -238,6 +241,35 @@ The following table shows the complete training curve for $\lambda_{\text{distil
 
 > [!NOTE]
 > A remarkable finding: the 0.0 and 50.0 runs converge to nearly **identical** distillation loss values (~2.19) by Epoch 29, despite having vastly different λ weights. This confirms that the distillation coefficient only affects the **gradient magnitude** during backpropagation (since it multiplies the distill loss in the total), not the raw MSE between active and frozen encoders. Both models drift by the same amount in latent space — but only λ=50.0 amplifies that drift into a dominant, model-crushing gradient.
+
+### 4.5 A\*-Free Memory Ablation: What the Success Number Actually Measures
+
+The closed-loop A\*-free evaluator (`eval_subgoal.py`) augments the learned policy with three hand-coded *execution-memory* heuristics in the low-level reacher. None use privileged information (no A\*, no goal cell, no maze grid), but all three are hand-written, not learned, so a raw success rate can silently credit the learned policy for work the heuristics do:
+
+- **`blocked`** — cross-step memory of `(cell, direction)` pairs that physically did not move (wall memory).
+- **`last_rev`** — forbids immediately reversing the last committed move (anti-oscillation).
+- **`revisit_pen`** — count-based penalty for stepping onto already-visited cells (exploration drive).
+
+To attribute the score correctly we merged the prior `eval_strict.py` into a single evaluator with a per-heuristic flag and a `--ablation` mode that runs a leave-one-out table on a **fixed, seeded maze set** (every row sees identical mazes). On a fresh sequentially-trained pipeline (11×11 maze, frozen fine WM + subgoal predictor, 32 mazes, seed 0):
+
+| config | blocked | last_rev | revisit_pen | success | SPL |
+|---|---|---|---|---|---|
+| full | on | on | 1.0 | 75.00% | 0.743 |
+| **−revisit** | on | on | 0 | **96.88%** | **0.969** |
+| −last_rev | on | **off** | 1.0 | 3.12% | 0.031 |
+| −blocked | **off** | on | 1.0 | 75.00% | 0.743 |
+| memoryless | off | off | 0 | 0.00% | 0.000 |
+
+Three findings:
+
+1. **The learned subgoal policy is genuinely useful.** With only legitimate execution memory it reaches **96.88%** — no A\*, no map, no goal-peeking. The verbose per-step traces confirm the subgoal predictor produces a correct directional gradient toward the goal.
+2. **Exactly one heuristic is load-bearing, and it is a legitimate one.** Removing `last_rev` collapses success 75.00% → **3.12%**: a memoryless greedy controller oscillates in 2-cycles at junctions, and a single "don't reverse your last move" bit unlocks the rest.
+3. **The other two heuristics were not helping.** `blocked` is inert (`−blocked` = `full` = 75.00%; the wall-aware WM plus per-step retry already avoids walls), and `revisit_pen` is *actively harmful* — removing it raises 75.00% → 96.88% because the penalty traps the agent in dead-ends it must legitimately back out of.
+
+The honest conclusion is not "0% without cheats" but a precise decomposition: the learned compass is good, the reported rate rested on a single legitimate anti-reversal rule, and one of the "helpers" was hurting. The `memoryless` 0% is the reactive floor that an undifferentiated success number obscures.
+
+> [!NOTE]
+> This 96.88% is on the easier 11×11 maze and is **not** directly comparable to the 21×21 figures in §4.1. The same ablation should be rerun with `train_maze_aux.yaml` (21×21, stronger auxiliary-position loss) for an apples-to-apples comparison.
 
 ---
 
